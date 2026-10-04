@@ -12,6 +12,7 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+DISPATCH_DEPART_RE = re.compile(r"^/api/dispatch/entries/(\d+)/depart$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -57,7 +58,10 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                body = {"error": exc.code, "message": str(exc)}
+                if getattr(exc, "details", None):
+                    body["details"] = exc.details
+                self._send(exc.status, body)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 
@@ -87,6 +91,19 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
                     return
+                if parsed.path == "/api/dispatch/queue":
+                    self._send(200, service.dispatch.queue_view(self._actor()))
+                    return
+                if parsed.path == "/api/dispatch/resources":
+                    self._send(200, {"items": service.dispatch.resources_view(self._actor())})
+                    return
+                if parsed.path == "/api/dispatch/candidates":
+                    self._send(200, {"items": service.dispatch.candidates(self._actor())})
+                    return
+                if parsed.path == "/api/dispatch/events":
+                    query = parse_qs(parsed.query)
+                    self._send(200, {"items": service.dispatch.events(self._actor(), limit=int(query.get("limit", ["100"])[0]))})
+                    return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
                 self._handle_error(exc)
@@ -106,6 +123,22 @@ def make_handler(service: Any, static_dir: Path):
                         raise ValidationError("expected_version必须是整数")
                     record = service.act(self._actor(), int(match.group(1)), version, match.group(2), body.get("data", {}))
                     self._send(200, record)
+                    return
+                if parsed.path == "/api/dispatch/entries":
+                    self._send(201, service.dispatch.enqueue(self._actor(), body))
+                    return
+                match = DISPATCH_DEPART_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.dispatch.depart(self._actor(), int(match.group(1))))
+                    return
+                if parsed.path == "/api/dispatch/reorders":
+                    self._send(200, service.dispatch.reorder(self._actor(), body))
+                    return
+                if parsed.path == "/api/dispatch/recover":
+                    self._send(200, service.dispatch.recover(self._actor()))
+                    return
+                if parsed.path == "/api/dispatch/resources":
+                    self._send(201, service.dispatch.add_resource(self._actor(), body))
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:

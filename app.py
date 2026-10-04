@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 
 from src.audit import AuditRecorder
+from src.dispatch import DispatchService
 from src.http_api import create_server
 from src.repository import Repository
 from src.rules import DomainRules
@@ -17,7 +18,9 @@ DEFAULT_PORT = 8330
 def build_service(db_path: str) -> Service:
     repository = Repository(db_path)
     audit = AuditRecorder(repository)
-    return Service(repository, DomainRules(), audit)
+    rules = DomainRules()
+    dispatch = DispatchService(repository, rules, audit)
+    return Service(repository, rules, audit, dispatch)
 
 
 def parse_args():

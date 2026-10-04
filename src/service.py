@@ -8,10 +8,11 @@ from .rules import DomainRules
 
 
 class Service:
-    def __init__(self, repository: Repository, rules: DomainRules, audit: AuditRecorder = None) -> None:
+    def __init__(self, repository: Repository, rules: DomainRules, audit: AuditRecorder = None, dispatch=None) -> None:
         self.repository = repository
         self.rules = rules
         self.audit = audit or AuditRecorder(repository)
+        self.dispatch = dispatch
 
     @staticmethod
     def _actor(actor: Actor) -> Actor:
@@ -41,7 +42,12 @@ class Service:
     def get_record(self, actor: Actor, record_id: int) -> Dict[str, Any]:
         actor = self._actor(actor)
         self._ensure_known_role(actor)
-        return self.repository.get(record_id)
+        record = self.repository.get(record_id)
+        if self.dispatch is not None:
+            entry = self.dispatch.entry_for_record(record_id)
+            if entry is not None:
+                record["dispatch"] = entry
+        return record
 
     def act(self, actor: Actor, record_id: int, expected_version: int, action: str, data: Dict[str, Any]) -> Dict[str, Any]:
         actor = self._actor(actor)
@@ -52,7 +58,7 @@ class Service:
         record = self.repository.get(record_id)
         self.rules.require_transition(record, action)
         new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
-        return self.repository.mutate(
+        record = self.repository.mutate(
             record_id=record_id,
             expected_version=int(expected_version),
             state=new_state,
@@ -61,6 +67,9 @@ class Service:
             action=action,
             details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
         )
+        if self.dispatch is not None:
+            self.dispatch.on_record_action(actor, record, action)
+        return record
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
         actor = self._actor(actor)
