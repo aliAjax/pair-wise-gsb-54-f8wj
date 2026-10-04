@@ -12,6 +12,8 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+QUEUE_ITEM_ACTION_RE = re.compile(r"^/api/queue/items/(\d+)/(confirm|depart|release)$")
+QUEUE_CANDIDATE_ACTION_RE = re.compile(r"^/api/queue/candidates/(\d+)/(apply|discard)$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -76,6 +78,25 @@ def make_handler(service: Any, static_dir: Path):
                     records = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
                     self._send(200, {"items": records})
                     return
+                if parsed.path == "/api/queue":
+                    self._send(200, service.get_queue(self._actor()))
+                    return
+                if parsed.path == "/api/queue/resources":
+                    self._send(200, service.list_resources(self._actor()))
+                    return
+                if parsed.path == "/api/queue/versions":
+                    self._send(200, {"items": service.list_queue_versions(self._actor())})
+                    return
+                if parsed.path == "/api/queue/candidates":
+                    self._send(200, {"items": service.list_candidates(self._actor())})
+                    return
+                if parsed.path == "/api/queue/events":
+                    query = parse_qs(parsed.query)
+                    self._send(200, {"items": service.queue_events(self._actor(), int(query.get("limit", ["100"])[0]))})
+                    return
+                if parsed.path == "/api/queue/suggestion":
+                    self._send(200, service.suggest_order(self._actor()))
+                    return
                 match = RECORD_RE.match(parsed.path)
                 if match:
                     self._send(200, service.get_record(self._actor(), int(match.group(1))))
@@ -98,6 +119,41 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/queue/items":
+                    result = service.enqueue(self._actor(), body)
+                    self._send(201 if result.get("created") else 200, result)
+                    return
+                match = QUEUE_ITEM_ACTION_RE.match(parsed.path)
+                if match:
+                    item_id = int(match.group(1))
+                    action = match.group(2)
+                    if action == "confirm":
+                        result = service.confirm_item(self._actor(), item_id)
+                    elif action == "depart":
+                        result = service.depart_item(self._actor(), item_id)
+                    else:
+                        result = service.release_item(self._actor(), item_id, body.get("reason", ""))
+                    self._send(200, result)
+                    return
+                if parsed.path == "/api/queue/reorder":
+                    result = service.reorder(self._actor(), body)
+                    self._send(202 if result.get("result") == "candidate" else 200, result)
+                    return
+                if parsed.path == "/api/queue/resources":
+                    self._send(201, service.upsert_resource(self._actor(), body))
+                    return
+                if parsed.path == "/api/queue/recover":
+                    self._send(200, service.recover_queue(self._actor()))
+                    return
+                match = QUEUE_CANDIDATE_ACTION_RE.match(parsed.path)
+                if match:
+                    candidate_id = int(match.group(1))
+                    if match.group(2) == "apply":
+                        result = service.apply_candidate(self._actor(), candidate_id)
+                        self._send(202 if result.get("result") == "candidate" else 200, result)
+                    else:
+                        self._send(200, service.discard_candidate(self._actor(), candidate_id))
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:
